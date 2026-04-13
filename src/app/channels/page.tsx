@@ -29,6 +29,7 @@ export default function ChannelsPage() {
   const [activeCountries, setActiveCountries] = useState<Set<string>>(new Set())
   const [loadingCats, setLoadingCats] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [syncProgress, setSyncProgress] = useState<{ done: number; total: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [expandedCat, setExpandedCat] = useState<string | null>(null)
   const [selectingAll, setSelectingAll] = useState(false)
@@ -155,17 +156,51 @@ export default function ChannelsPage() {
 
   async function handleSave() {
     setSaving(true)
+    setSyncProgress(null)
     setError(null)
+
     const streamIds = Array.from(selected.keys())
-    const channels = Array.from(selected.values())
-      .filter(ch => ch.name)
-      .map(ch => ({ stream_id: ch.stream_id, name: ch.name, category_id: ch.category_id, category_name: ch.category_name, logo_url: ch.logo_url, epg_id: ch.epg_id }))
+
+    // Phase 1: Save stream IDs only — tiny payload, fast (<2s)
     const res = await fetch('/api/selections', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ streamIds, channels }),
+      body: JSON.stringify({ streamIds }),
     })
     if (!res.ok) { setError('Failed to save. Try again.'); setSaving(false); return }
+
+    // Phase 2: Sync channel details per category from Xtream
+    // Group selected channels by category_id (only channels we have metadata for)
+    const catMap = new Map<string, { category_name: string; stream_ids: number[] }>()
+    for (const ch of selected.values()) {
+      if (!ch.category_id) continue
+      const entry = catMap.get(ch.category_id)
+      if (entry) entry.stream_ids.push(ch.stream_id)
+      else catMap.set(ch.category_id, { category_name: ch.category_name, stream_ids: [ch.stream_id] })
+    }
+
+    const categories = Array.from(catMap.entries())
+    const total = categories.length
+    let done = 0
+    setSyncProgress({ done: 0, total })
+
+    // Sync 5 categories at a time — each call fetches one category from Xtream (<10s each)
+    const CHUNK = 5
+    for (let i = 0; i < categories.length; i += CHUNK) {
+      const chunk = categories.slice(i, i + CHUNK)
+      await Promise.all(chunk.map(async ([category_id, { category_name, stream_ids }]) => {
+        try {
+          await fetch('/api/sync-category', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ category_id, category_name, stream_ids }),
+          })
+        } catch { /* non-fatal — channel details can sync later */ }
+        done++
+        setSyncProgress({ done, total })
+      }))
+    }
+
     router.push('/dashboard')
   }
 
@@ -203,11 +238,19 @@ export default function ChannelsPage() {
           </Link>
         </div>
         <div className="flex-none gap-3 items-center">
-          <div className="text-sm text-base-content/60 hidden sm:block">
-            <span className="text-white font-semibold">{selectedCount}</span> selected
-          </div>
+          {syncProgress && (
+            <div className="flex items-center gap-2 text-sm text-base-content/70">
+              <span className="loading loading-spinner loading-xs text-primary" />
+              <span>Syncing {syncProgress.done}/{syncProgress.total}</span>
+            </div>
+          )}
+          {!syncProgress && (
+            <div className="text-sm text-base-content/60 hidden sm:block">
+              <span className="text-white font-semibold">{selectedCount}</span> selected
+            </div>
+          )}
           <button className="btn btn-primary btn-sm" onClick={handleSave} disabled={saving}>
-            {saving ? <span className="loading loading-spinner loading-sm" /> : 'Save Playlist →'}
+            {saving && !syncProgress ? <span className="loading loading-spinner loading-sm" /> : 'Save Playlist →'}
           </button>
         </div>
       </div>

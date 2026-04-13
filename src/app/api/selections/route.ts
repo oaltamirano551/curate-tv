@@ -66,8 +66,11 @@ export async function POST(request: NextRequest) {
     .single()
   if (!cred) return NextResponse.json({ error: 'No credentials found' }, { status: 404 })
 
-  // Delete old, insert new — stream IDs only, very fast
-  await admin.from('selections').delete().eq('user_id', user.id)
+  // Replace selections + wipe channel cache so sync-category starts clean
+  await Promise.all([
+    admin.from('selections').delete().eq('user_id', user.id),
+    admin.from('channels').delete().eq('credential_id', cred.id),
+  ])
 
   if (streamIds.length > 0) {
     const rows = streamIds.map(sid => ({
@@ -75,7 +78,6 @@ export async function POST(request: NextRequest) {
       credential_id: cred.id,
       stream_id: sid,
     }))
-    // Large batches (2000) + parallel = minimal round-trips
     const BATCH = 2000
     const inserts = []
     for (let i = 0; i < rows.length; i += BATCH) {

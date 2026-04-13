@@ -29,7 +29,7 @@ export default function ChannelsPage() {
   const [activeCountries, setActiveCountries] = useState<Set<string>>(new Set())
   const [loadingCats, setLoadingCats] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [syncProgress, setSyncProgress] = useState<{ done: number; total: number } | null>(null)
+  const [syncProgress, setSyncProgress] = useState<{ done: number; total: number; failed: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [expandedCat, setExpandedCat] = useState<string | null>(null)
   const [selectingAll, setSelectingAll] = useState(false)
@@ -182,22 +182,24 @@ export default function ChannelsPage() {
     const categories = Array.from(catMap.entries())
     const total = categories.length
     let done = 0
-    setSyncProgress({ done: 0, total })
+    let failed = 0
+    setSyncProgress({ done: 0, total, failed: 0 })
 
-    // Sync 5 categories at a time — each call fetches one category from Xtream (<10s each)
-    const CHUNK = 5
+    // Sync 3 categories at a time — keep Xtream load manageable
+    const CHUNK = 3
     for (let i = 0; i < categories.length; i += CHUNK) {
       const chunk = categories.slice(i, i + CHUNK)
       await Promise.all(chunk.map(async ([category_id, { category_name, stream_ids }]) => {
         try {
-          await fetch('/api/sync-category', {
+          const r = await fetch('/api/sync-category', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ category_id, category_name, stream_ids }),
           })
-        } catch { /* non-fatal — channel details can sync later */ }
+          if (!r.ok) failed++
+        } catch { failed++ }
         done++
-        setSyncProgress({ done, total })
+        setSyncProgress({ done, total, failed })
       }))
     }
 
@@ -242,6 +244,9 @@ export default function ChannelsPage() {
             <div className="flex items-center gap-2 text-sm text-base-content/70">
               <span className="loading loading-spinner loading-xs text-primary" />
               <span>Syncing {syncProgress.done}/{syncProgress.total}</span>
+              {syncProgress.failed > 0 && (
+                <span className="text-error text-xs">{syncProgress.failed} failed</span>
+              )}
             </div>
           )}
           {!syncProgress && (

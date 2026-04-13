@@ -1,7 +1,7 @@
 'use client'
 
 import Link from "next/link"
-import { useState, useEffect, useRef, useMemo } from "react"
+import { useState, useEffect, useRef, useMemo, useCallback } from "react"
 import { useRouter } from "next/navigation"
 import { getCategoryCode, getFiltersFromCategories, type CountryFilter } from "@/lib/countryMap"
 
@@ -26,11 +26,12 @@ export default function ChannelsPage() {
   const [categories, setCategories] = useState<Category[]>([])
   const [selected, setSelected] = useState<Map<number, Channel & { category_name: string }>>(new Map())
   const [search, setSearch] = useState('')
-  const [activeCountry, setActiveCountry] = useState<string | null>(null)
+  const [activeCountries, setActiveCountries] = useState<Set<string>>(new Set())
   const [loadingCats, setLoadingCats] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [expandedCat, setExpandedCat] = useState<string | null>(null)
+  const [selectingAll, setSelectingAll] = useState(false)
   const fetchingRef = useRef<Set<string>>(new Set())
 
   useEffect(() => {
@@ -57,8 +58,23 @@ export default function ChannelsPage() {
     [categories]
   )
 
-  async function loadCategory(cat: Category) {
-    if (cat.loaded || fetchingRef.current.has(cat.category_id)) return
+  const loadCategory = useCallback(async (cat: Category): Promise<Channel[]> => {
+    if (cat.loaded) return cat.channels || []
+    if (fetchingRef.current.has(cat.category_id)) {
+      // Wait for existing fetch to complete
+      return new Promise(resolve => {
+        const interval = setInterval(() => {
+          if (!fetchingRef.current.has(cat.category_id)) {
+            clearInterval(interval)
+            setCategories(prev => {
+              const found = prev.find(c => c.category_id === cat.category_id)
+              resolve(found?.channels || [])
+              return prev
+            })
+          }
+        }, 100)
+      })
+    }
     fetchingRef.current.add(cat.category_id)
     setCategories(prev => prev.map(c =>
       c.category_id === cat.category_id ? { ...c, loading: true } : c
@@ -77,7 +93,8 @@ export default function ChannelsPage() {
       return next
     })
     fetchingRef.current.delete(cat.category_id)
-  }
+    return channels
+  }, [])
 
   function toggleExpand(cat: Category) {
     const next = expandedCat === cat.category_id ? null : cat.category_id
@@ -93,16 +110,42 @@ export default function ChannelsPage() {
     })
   }
 
-  function toggleCategory(cat: Category) {
-    if (!cat.channels) return
-    const allSelected = cat.channels.every(ch => selected.has(ch.stream_id))
+  async function toggleCategory(cat: Category) {
+    // Load first if needed
+    let channels = cat.channels
+    if (!cat.loaded) {
+      channels = await loadCategory(cat)
+    }
+    if (!channels) return
+    const allSel = channels.every(ch => selected.has(ch.stream_id))
     setSelected(prev => {
       const next = new Map(prev)
-      cat.channels!.forEach(ch =>
-        allSelected ? next.delete(ch.stream_id) : next.set(ch.stream_id, { ...ch, category_name: cat.category_name })
+      channels!.forEach(ch =>
+        allSel ? next.delete(ch.stream_id) : next.set(ch.stream_id, { ...ch, category_name: cat.category_name })
       )
       return next
     })
+  }
+
+  async function selectAllVisible() {
+    setSelectingAll(true)
+    // Get current visible cats snapshot (can't use state inside async reliably)
+    const visible = categories.filter(c => {
+      if (activeCountries.size > 0 && !activeCountries.has(getCategoryCode(c.category_name))) return false
+      if (search.trim() && !c.category_name.toLowerCase().includes(search.toLowerCase())) return false
+      return true
+    })
+    // Load all unloaded categories in parallel
+    const results = await Promise.all(visible.map(cat => loadCategory(cat)))
+    // Select all channels from all visible categories
+    setSelected(prev => {
+      const next = new Map(prev)
+      visible.forEach((cat, i) => {
+        results[i].forEach(ch => next.set(ch.stream_id, { ...ch, category_name: cat.category_name }))
+      })
+      return next
+    })
+    setSelectingAll(false)
   }
 
   async function handleSave() {
@@ -121,18 +164,26 @@ export default function ChannelsPage() {
     router.push('/dashboard')
   }
 
+  function toggleCountry(code: string) {
+    setActiveCountries(prev => {
+      const next = new Set(prev)
+      next.has(code) ? next.delete(code) : next.add(code)
+      return next
+    })
+  }
+
   // Apply country filter + text search
   const visibleCategories = useMemo(() => {
     let list = categories
-    if (activeCountry) {
-      list = list.filter(c => getCategoryCode(c.category_name) === activeCountry)
+    if (activeCountries.size > 0) {
+      list = list.filter(c => activeCountries.has(getCategoryCode(c.category_name)))
     }
     if (search.trim()) {
       const q = search.toLowerCase()
       list = list.filter(c => c.category_name.toLowerCase().includes(q))
     }
     return list
-  }, [categories, activeCountry, search])
+  }, [categories, activeCountries, search])
 
   const selectedCount = selected.size
 
@@ -210,16 +261,16 @@ export default function ChannelsPage() {
               <div className="flex flex-wrap gap-1.5">
                 {/* All button */}
                 <button
-                  onClick={() => setActiveCountry(null)}
-                  className={`btn btn-xs gap-1 ${activeCountry === null ? 'btn-primary' : 'btn-ghost'}`}
+                  onClick={() => setActiveCountries(new Set())}
+                  className={`btn btn-xs gap-1 ${activeCountries.size === 0 ? 'btn-primary' : 'btn-ghost'}`}
                 >
                   🌐 All
                 </button>
                 {countryFilters.map(f => (
                   <button
                     key={f.code}
-                    onClick={() => setActiveCountry(activeCountry === f.code ? null : f.code)}
-                    className={`btn btn-xs gap-1 ${activeCountry === f.code ? 'btn-primary' : 'btn-ghost'}`}
+                    onClick={() => toggleCountry(f.code)}
+                    className={`btn btn-xs gap-1 ${activeCountries.has(f.code) ? 'btn-primary' : 'btn-ghost'}`}
                     title={f.label}
                   >
                     <span>{f.flag}</span>
@@ -229,16 +280,24 @@ export default function ChannelsPage() {
               </div>
             </div>
 
-            {/* Search */}
+            {/* Search + select all */}
             <div className="flex gap-3 items-center">
               <input
                 type="text"
-                placeholder={activeCountry ? `Search ${countryFilters.find(f => f.code === activeCountry)?.label} categories...` : 'Search all categories...'}
+                placeholder={activeCountries.size > 0 ? `Search filtered categories...` : 'Search all categories...'}
                 className="input input-bordered flex-1"
                 value={search}
                 onChange={e => setSearch(e.target.value)}
               />
               <span className="text-sm text-base-content/50 shrink-0">{visibleCategories.length} shown</span>
+              <button
+                className="btn btn-sm btn-outline shrink-0"
+                onClick={selectAllVisible}
+                disabled={selectingAll || visibleCategories.length === 0}
+                title="Load and select all visible categories"
+              >
+                {selectingAll ? <span className="loading loading-spinner loading-xs" /> : 'Select all'}
+              </button>
             </div>
 
             {/* Category accordion */}
@@ -267,7 +326,6 @@ export default function ChannelsPage() {
                         className="checkbox checkbox-primary flex-shrink-0"
                         checked={allSelected}
                         ref={el => { if (el) el.indeterminate = someSelected }}
-                        disabled={!cat.loaded}
                         onChange={e => { e.stopPropagation(); toggleCategory(cat) }}
                         onClick={e => e.stopPropagation()}
                       />
@@ -277,7 +335,7 @@ export default function ChannelsPage() {
                             <span
                               className="text-base cursor-pointer hover:scale-125 transition-transform"
                               title={`Filter: ${countryInfo.label}`}
-                              onClick={e => { e.stopPropagation(); setActiveCountry(activeCountry === code ? null : code) }}
+                              onClick={e => { e.stopPropagation(); toggleCountry(code) }}
                             >
                               {countryInfo.flag}
                             </span>

@@ -32,20 +32,11 @@ export default function OnboardingPage() {
       return
     }
 
-    // Sync channels from provider
-    setStatus('syncing')
-    const syncRes = await fetch('/api/channels', { method: 'POST' })
-    if (!syncRes.ok) {
-      setError('Connected but failed to sync channels. Try again.')
-      setStatus('error')
-      return
-    }
-
     router.push('/channels')
   }
 
-  const isLoading = status === 'saving' || status === 'syncing'
-  const statusLabel = status === 'syncing' ? 'Syncing your channels...' : 'Connecting...'
+  const isLoading = status === 'saving'
+  const statusLabel = 'Connecting...'
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-base-200 px-4">

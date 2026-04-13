@@ -62,13 +62,8 @@ export async function POST(request: NextRequest) {
 
   if (channels.length === 0) return NextResponse.json({ ok: true, count: 0 })
 
-  // Table was already wiped in phase 1 (POST /api/selections)
-  // Just insert — ignoreDuplicates handles any race between parallel sync calls
-  const { error } = await admin
-    .from('channels')
-    .insert(channels, { count: 'exact' })
-    // @ts-expect-error ignoreDuplicates is valid PostgREST option
-    .options({ ignoreDuplicates: true })
+  // Table was wiped in phase 1 (POST /api/selections) — plain insert, no duplicates
+  const { error } = await admin.from('channels').insert(channels)
 
   if (error) {
     console.error(`sync-category ${category_id} insert error:`, error.message)

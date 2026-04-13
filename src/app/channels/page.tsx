@@ -1,8 +1,9 @@
 'use client'
 
 import Link from "next/link"
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useMemo } from "react"
 import { useRouter } from "next/navigation"
+import { getCategoryCode, getFiltersFromCategories, type CountryFilter } from "@/lib/countryMap"
 
 type Channel = {
   stream_id: number
@@ -25,13 +26,13 @@ export default function ChannelsPage() {
   const [categories, setCategories] = useState<Category[]>([])
   const [selected, setSelected] = useState<Map<number, Channel & { category_name: string }>>(new Map())
   const [search, setSearch] = useState('')
+  const [activeCountry, setActiveCountry] = useState<string | null>(null)
   const [loadingCats, setLoadingCats] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [expandedCat, setExpandedCat] = useState<string | null>(null)
   const fetchingRef = useRef<Set<string>>(new Set())
 
-  // Load categories + existing selections on mount
   useEffect(() => {
     async function load() {
       const [catRes, selRes] = await Promise.all([
@@ -41,11 +42,8 @@ export default function ChannelsPage() {
       const catData = await catRes.json()
       const selData = await selRes.json()
       setCategories((catData.categories || []).map((c: Category) => ({ ...c, loaded: false })))
-
-      // Restore previous selections display (stream_ids only — details loaded on expand)
       const prevIds: number[] = selData.selections || []
       if (prevIds.length > 0) {
-        // Store IDs as placeholders; full details loaded when category expanded
         setSelected(new Map(prevIds.map((id: number) => [id, { stream_id: id, name: '', category_id: '', logo_url: '', epg_id: '', category_name: '' }])))
       }
       setLoadingCats(false)
@@ -53,51 +51,44 @@ export default function ChannelsPage() {
     load()
   }, [])
 
-  // Fetch channels for a category on demand
+  // Derive country filter buttons from loaded categories
+  const countryFilters: CountryFilter[] = useMemo(
+    () => getFiltersFromCategories(categories.map(c => c.category_name)),
+    [categories]
+  )
+
   async function loadCategory(cat: Category) {
     if (cat.loaded || fetchingRef.current.has(cat.category_id)) return
     fetchingRef.current.add(cat.category_id)
-
     setCategories(prev => prev.map(c =>
       c.category_id === cat.category_id ? { ...c, loading: true } : c
     ))
-
     const res = await fetch(`/api/channels?category_id=${cat.category_id}`)
     const data = await res.json()
     const channels: Channel[] = data.channels || []
-
     setCategories(prev => prev.map(c =>
-      c.category_id === cat.category_id
-        ? { ...c, channels, loading: false, loaded: true }
-        : c
+      c.category_id === cat.category_id ? { ...c, channels, loading: false, loaded: true } : c
     ))
-
-    // Update selected map with full channel details for any previously selected streams
     setSelected(prev => {
       const next = new Map(prev)
       channels.forEach(ch => {
-        if (next.has(ch.stream_id)) {
-          next.set(ch.stream_id, { ...ch, category_name: cat.category_name })
-        }
+        if (next.has(ch.stream_id)) next.set(ch.stream_id, { ...ch, category_name: cat.category_name })
       })
       return next
     })
-
     fetchingRef.current.delete(cat.category_id)
   }
 
   function toggleExpand(cat: Category) {
-    const newExpanded = expandedCat === cat.category_id ? null : cat.category_id
-    setExpandedCat(newExpanded)
-    if (newExpanded) loadCategory(cat)
+    const next = expandedCat === cat.category_id ? null : cat.category_id
+    setExpandedCat(next)
+    if (next) loadCategory(cat)
   }
 
   function toggleChannel(ch: Channel, categoryName: string) {
     setSelected(prev => {
       const next = new Map(prev)
-      next.has(ch.stream_id)
-        ? next.delete(ch.stream_id)
-        : next.set(ch.stream_id, { ...ch, category_name: categoryName })
+      next.has(ch.stream_id) ? next.delete(ch.stream_id) : next.set(ch.stream_id, { ...ch, category_name: categoryName })
       return next
     })
   }
@@ -108,9 +99,7 @@ export default function ChannelsPage() {
     setSelected(prev => {
       const next = new Map(prev)
       cat.channels!.forEach(ch =>
-        allSelected
-          ? next.delete(ch.stream_id)
-          : next.set(ch.stream_id, { ...ch, category_name: cat.category_name })
+        allSelected ? next.delete(ch.stream_id) : next.set(ch.stream_id, { ...ch, category_name: cat.category_name })
       )
       return next
     })
@@ -119,37 +108,31 @@ export default function ChannelsPage() {
   async function handleSave() {
     setSaving(true)
     setError(null)
-
     const streamIds = Array.from(selected.keys())
     const channels = Array.from(selected.values())
-      .filter(ch => ch.name) // skip placeholder entries
-      .map(ch => ({
-        stream_id: ch.stream_id,
-        name: ch.name,
-        category_id: ch.category_id,
-        category_name: ch.category_name,
-        logo_url: ch.logo_url,
-        epg_id: ch.epg_id,
-      }))
-
+      .filter(ch => ch.name)
+      .map(ch => ({ stream_id: ch.stream_id, name: ch.name, category_id: ch.category_id, category_name: ch.category_name, logo_url: ch.logo_url, epg_id: ch.epg_id }))
     const res = await fetch('/api/selections', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ streamIds, channels }),
     })
-
-    if (!res.ok) {
-      setError('Failed to save. Try again.')
-      setSaving(false)
-      return
-    }
+    if (!res.ok) { setError('Failed to save. Try again.'); setSaving(false); return }
     router.push('/dashboard')
   }
 
-  // Filter categories by search
-  const visibleCategories = search.trim()
-    ? categories.filter(c => c.category_name.toLowerCase().includes(search.toLowerCase()))
-    : categories
+  // Apply country filter + text search
+  const visibleCategories = useMemo(() => {
+    let list = categories
+    if (activeCountry) {
+      list = list.filter(c => getCategoryCode(c.category_name) === activeCountry)
+    }
+    if (search.trim()) {
+      const q = search.toLowerCase()
+      list = list.filter(c => c.category_name.toLowerCase().includes(q))
+    }
+    return list
+  }, [categories, activeCountry, search])
 
   const selectedCount = selected.size
 
@@ -165,7 +148,7 @@ export default function ChannelsPage() {
         </div>
         <div className="flex-none gap-3 items-center">
           <div className="text-sm text-base-content/60 hidden sm:block">
-            <span className="text-white font-semibold">{selectedCount}</span> channels selected
+            <span className="text-white font-semibold">{selectedCount}</span> selected
           </div>
           <button className="btn btn-primary btn-sm" onClick={handleSave} disabled={saving}>
             {saving ? <span className="loading loading-spinner loading-sm" /> : 'Save Playlist →'}
@@ -193,15 +176,19 @@ export default function ChannelsPage() {
           {/* Sidebar */}
           <aside className="w-60 bg-base-100 border-r border-base-300 flex-shrink-0 sticky top-[113px] h-[calc(100vh-113px)] overflow-y-auto p-4 hidden md:block">
             <p className="text-xs font-semibold text-base-content/40 uppercase tracking-wider mb-3">
-              {categories.length} Categories
+              {visibleCategories.length} / {categories.length} categories
             </p>
             <ul className="menu menu-sm gap-0.5 p-0">
-              {categories.map(cat => {
+              {visibleCategories.map(cat => {
                 const catCount = Array.from(selected.values()).filter(ch => ch.category_id === cat.category_id).length
                 return (
                   <li key={cat.category_id}>
                     <button
-                      onClick={() => { setExpandedCat(cat.category_id); loadCategory(cat); document.getElementById(`cat-${cat.category_id}`)?.scrollIntoView({ behavior: 'smooth' }) }}
+                      onClick={() => {
+                        setExpandedCat(cat.category_id)
+                        loadCategory(cat)
+                        document.getElementById(`cat-${cat.category_id}`)?.scrollIntoView({ behavior: 'smooth' })
+                      }}
                       className="flex justify-between text-xs py-1.5 w-full text-left"
                     >
                       <span className="truncate">{cat.category_name}</span>
@@ -214,37 +201,66 @@ export default function ChannelsPage() {
           </aside>
 
           {/* Main */}
-          <main className="flex-1 p-5 space-y-3 max-w-4xl">
+          <main className="flex-1 p-5 space-y-4 max-w-4xl">
             {error && <div className="alert alert-error text-sm"><span>{error}</span></div>}
+
+            {/* Country flag filter bar */}
+            <div className="bg-base-100 rounded-2xl p-3 shadow-sm">
+              <p className="text-xs text-base-content/40 font-medium uppercase tracking-wider mb-2 px-1">Filter by country</p>
+              <div className="flex flex-wrap gap-1.5">
+                {/* All button */}
+                <button
+                  onClick={() => setActiveCountry(null)}
+                  className={`btn btn-xs gap-1 ${activeCountry === null ? 'btn-primary' : 'btn-ghost'}`}
+                >
+                  🌐 All
+                </button>
+                {countryFilters.map(f => (
+                  <button
+                    key={f.code}
+                    onClick={() => setActiveCountry(activeCountry === f.code ? null : f.code)}
+                    className={`btn btn-xs gap-1 ${activeCountry === f.code ? 'btn-primary' : 'btn-ghost'}`}
+                    title={f.label}
+                  >
+                    <span>{f.flag}</span>
+                    <span className="hidden sm:inline">{f.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
 
             {/* Search */}
             <div className="flex gap-3 items-center">
               <input
                 type="text"
-                placeholder="Search categories..."
+                placeholder={activeCountry ? `Search ${countryFilters.find(f => f.code === activeCountry)?.label} categories...` : 'Search all categories...'}
                 className="input input-bordered flex-1"
                 value={search}
                 onChange={e => setSearch(e.target.value)}
               />
-              <span className="text-sm text-base-content/50 hidden sm:block">{categories.length} total</span>
+              <span className="text-sm text-base-content/50 shrink-0">{visibleCategories.length} shown</span>
             </div>
 
             {/* Category accordion */}
+            {visibleCategories.length === 0 && (
+              <div className="text-center py-16 text-base-content/40">
+                No categories found.
+              </div>
+            )}
+
             {visibleCategories.map(cat => {
               const isExpanded = expandedCat === cat.category_id
               const catSelectedCount = cat.channels
                 ? cat.channels.filter(ch => selected.has(ch.stream_id)).length
                 : Array.from(selected.values()).filter(ch => ch.category_id === cat.category_id).length
-              const allSelected = cat.channels?.length ? cat.channels.every(ch => selected.has(ch.stream_id)) : false
+              const allSelected = !!cat.channels?.length && cat.channels.every(ch => selected.has(ch.stream_id))
               const someSelected = catSelectedCount > 0 && !allSelected
+              const code = getCategoryCode(cat.category_name)
+              const countryInfo = countryFilters.find(f => f.code === code)
 
               return (
                 <div key={cat.category_id} id={`cat-${cat.category_id}`} className="card bg-base-100 shadow-sm">
-                  {/* Category header — always visible */}
-                  <div
-                    className="card-body p-4 cursor-pointer select-none"
-                    onClick={() => toggleExpand(cat)}
-                  >
+                  <div className="card-body p-4 cursor-pointer select-none" onClick={() => toggleExpand(cat)}>
                     <div className="flex items-center gap-3">
                       <input
                         type="checkbox"
@@ -256,8 +272,19 @@ export default function ChannelsPage() {
                         onClick={e => e.stopPropagation()}
                       />
                       <div className="flex-1 min-w-0">
-                        <p className="font-semibold text-sm truncate">{cat.category_name}</p>
-                        <p className="text-xs text-base-content/50">
+                        <div className="flex items-center gap-2">
+                          {countryInfo && (
+                            <span
+                              className="text-base cursor-pointer hover:scale-125 transition-transform"
+                              title={`Filter: ${countryInfo.label}`}
+                              onClick={e => { e.stopPropagation(); setActiveCountry(activeCountry === code ? null : code) }}
+                            >
+                              {countryInfo.flag}
+                            </span>
+                          )}
+                          <p className="font-semibold text-sm truncate">{cat.category_name}</p>
+                        </div>
+                        <p className="text-xs text-base-content/50 mt-0.5">
                           {cat.loaded ? `${cat.channels?.length} channels` : 'Click to load'}
                           {catSelectedCount > 0 && ` · ${catSelectedCount} selected`}
                         </p>
@@ -265,12 +292,13 @@ export default function ChannelsPage() {
                       <div className="flex items-center gap-2 flex-shrink-0">
                         {catSelectedCount > 0 && <span className="badge badge-primary badge-sm">{catSelectedCount}</span>}
                         {cat.loading && <span className="loading loading-spinner loading-xs text-primary" />}
-                        <svg className={`w-4 h-4 text-base-content/40 transition-transform ${isExpanded ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                        <svg className={`w-4 h-4 text-base-content/40 transition-transform ${isExpanded ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
                       </div>
                     </div>
                   </div>
 
-                  {/* Channels — only rendered when expanded */}
                   {isExpanded && (
                     <div className="px-4 pb-4 pt-0 border-t border-base-200">
                       {cat.loading ? (
@@ -280,7 +308,7 @@ export default function ChannelsPage() {
                       ) : cat.channels && cat.channels.length > 0 ? (
                         <>
                           <div className="flex gap-2 pt-3 pb-2">
-                            <button className="btn btn-ghost btn-xs" onClick={() => toggleCategory(cat)}>
+                            <button className="btn btn-ghost btn-xs" onClick={e => { e.stopPropagation(); toggleCategory(cat) }}>
                               {allSelected ? 'Deselect all' : 'Select all'}
                             </button>
                           </div>

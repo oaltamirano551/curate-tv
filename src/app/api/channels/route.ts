@@ -85,21 +85,37 @@ export async function GET() {
 
   if (!cred) return NextResponse.json({ channels: [], categories: [] })
 
-  const { data: channels } = await admin
-    .from('channels')
-    .select('stream_id, name, category_id, category_name, logo_url, epg_id')
-    .eq('credential_id', cred.id)
-    .order('category_name')
-    .order('name')
+  // Paginate in chunks of 10,000 to bypass Supabase's 1000-row default limit
+  const PAGE = 10000
+  let allChannels: Array<{ stream_id: number; name: string; category_id: string; category_name: string; logo_url: string; epg_id: string }> = []
+  let from = 0
+
+  while (true) {
+    const { data: page } = await admin
+      .from('channels')
+      .select('stream_id, name, category_id, category_name, logo_url, epg_id')
+      .eq('credential_id', cred.id)
+      .order('category_name')
+      .order('name')
+      .range(from, from + PAGE - 1)
+
+    if (!page || page.length === 0) break
+    allChannels = allChannels.concat(page)
+    if (page.length < PAGE) break
+    from += PAGE
+  }
 
   // Group by category
-  const grouped: Record<string, { category_id: string; category_name: string; channels: typeof channels }> = {}
-  for (const ch of channels || []) {
+  const grouped: Record<string, { category_id: string; category_name: string; channels: typeof allChannels }> = {}
+  for (const ch of allChannels) {
     if (!grouped[ch.category_id]) {
       grouped[ch.category_id] = { category_id: ch.category_id, category_name: ch.category_name, channels: [] }
     }
-    grouped[ch.category_id].channels!.push(ch)
+    grouped[ch.category_id].channels.push(ch)
   }
 
   return NextResponse.json({ categories: Object.values(grouped) })
 }
+
+// Extend Vercel function timeout for the sync (POST) — fetching thousands of channels takes time
+export const maxDuration = 60

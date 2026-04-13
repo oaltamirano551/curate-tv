@@ -1,59 +1,103 @@
-import Link from "next/link";
+'use client'
 
-const MOCK_CATEGORIES = [
-  {
-    id: "us-sport", label: "US | Sport", count: 48, selected: 12,
-    channels: ["ESPN HD", "ESPN2 HD", "ESPN+ HD", "Fox Sports 1", "Fox Sports 2", "NBC Sports", "CBS Sports", "FS1 HD", "FS2 HD", "DAZN 1"],
-  },
-  {
-    id: "us-nfl", label: "US | NFL", count: 22, selected: 22,
-    channels: ["NFL Network", "NFL RedZone", "NFL Game Pass 1", "NFL Game Pass 2", "NFL Game Pass 3"],
-  },
-  {
-    id: "us-nba", label: "US | NBA", count: 18, selected: 0,
-    channels: ["NBA TV", "NBA League Pass 1", "NBA League Pass 2", "NBA League Pass 3"],
-  },
-  {
-    id: "us-nhl", label: "US | NHL", count: 16, selected: 0,
-    channels: ["NHL Network", "NHL Power Play 1", "NHL Power Play 2"],
-  },
-  {
-    id: "us-mlb", label: "US | MLB", count: 14, selected: 0,
-    channels: ["MLB Network", "MLB TV 1", "MLB TV 2"],
-  },
-  {
-    id: "uk-sport", label: "UK | Sport", count: 62, selected: 62,
-    channels: ["Sky Sports Main Event", "Sky Sports Premier League", "Sky Sports Football", "Sky Sports F1", "TNT Sports 1", "TNT Sports 2", "TNT Sports 3"],
-  },
-  {
-    id: "uk-epl", label: "UK | EPL Premier League", count: 10, selected: 10,
-    channels: ["EPL 1 HD", "EPL 2 HD", "EPL 3 HD", "EPL 4 HD"],
-  },
-  {
-    id: "uk-f1", label: "UK | Formula 1", count: 4, selected: 4,
-    channels: ["Sky Sports F1", "F1 TV Pro 1", "F1 TV Pro 2", "Apple TV F1"],
-  },
-  {
-    id: "us-ufc", label: "US | UFC / MMA", count: 8, selected: 8,
-    channels: ["UFC Fight Pass 1", "UFC Fight Pass 2", "ESPN UFC HD"],
-  },
-  {
-    id: "us-boxing", label: "US | Boxing / Matchroom", count: 6, selected: 6,
-    channels: ["DAZN Boxing 1", "DAZN Boxing 2", "Matchroom Boxing"],
-  },
-  {
-    id: "tennis", label: "Tennis TV", count: 12, selected: 0,
-    channels: ["Tennis Channel", "Tennis TV 1", "Tennis TV 2", "Wimbledon Live"],
-  },
-  {
-    id: "us-golf", label: "US | Golf", count: 6, selected: 0,
-    channels: ["Golf Channel", "PGA Tour Live 1", "PGA Tour Live 2", "The Masters"],
-  },
-];
+import Link from "next/link"
+import { useState, useEffect, useCallback } from "react"
+import { useRouter } from "next/navigation"
+
+type Channel = {
+  stream_id: number
+  name: string
+  category_id: string
+  category_name: string
+  logo_url: string
+  epg_id: string
+}
+
+type Category = {
+  category_id: string
+  category_name: string
+  channels: Channel[]
+}
 
 export default function ChannelsPage() {
-  const totalSelected = MOCK_CATEGORIES.reduce((a, c) => a + c.selected, 0);
-  const totalChannels = MOCK_CATEGORIES.reduce((a, c) => a + c.count, 0);
+  const router = useRouter()
+  const [categories, setCategories] = useState<Category[]>([])
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [search, setSearch] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // Load channels + existing selections
+  useEffect(() => {
+    async function load() {
+      const [catRes, selRes] = await Promise.all([
+        fetch('/api/channels'),
+        fetch('/api/selections'),
+      ])
+      const catData = await catRes.json()
+      const selData = await selRes.json()
+      setCategories(catData.categories || [])
+      setSelected(new Set(selData.selections || []))
+      setLoading(false)
+    }
+    load()
+  }, [])
+
+  function toggleChannel(streamId: number) {
+    setSelected(prev => {
+      const next = new Set(prev)
+      next.has(streamId) ? next.delete(streamId) : next.add(streamId)
+      return next
+    })
+  }
+
+  function toggleCategory(cat: Category) {
+    const allSelected = cat.channels.every(ch => selected.has(ch.stream_id))
+    setSelected(prev => {
+      const next = new Set(prev)
+      cat.channels.forEach(ch => allSelected ? next.delete(ch.stream_id) : next.add(ch.stream_id))
+      return next
+    })
+  }
+
+  function selectAll() {
+    const all = new Set<number>()
+    categories.forEach(cat => cat.channels.forEach(ch => all.add(ch.stream_id)))
+    setSelected(all)
+  }
+
+  function clearAll() { setSelected(new Set()) }
+
+  const filteredCategories = useCallback(() => {
+    if (!search.trim()) return categories
+    const q = search.toLowerCase()
+    return categories
+      .map(cat => ({
+        ...cat,
+        channels: cat.channels.filter(ch => ch.name.toLowerCase().includes(q)),
+      }))
+      .filter(cat => cat.channels.length > 0 || cat.category_name.toLowerCase().includes(q))
+  }, [categories, search])
+
+  async function handleSave() {
+    setSaving(true)
+    setError(null)
+    const res = await fetch('/api/selections', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ streamIds: Array.from(selected) }),
+    })
+    if (!res.ok) {
+      setError('Failed to save. Try again.')
+      setSaving(false)
+      return
+    }
+    router.push('/dashboard')
+  }
+
+  const totalChannels = categories.reduce((a, c) => a + c.channels.length, 0)
+  const visible = filteredCategories()
 
   return (
     <div className="min-h-screen flex flex-col bg-base-200">
@@ -66,12 +110,12 @@ export default function ChannelsPage() {
           </Link>
         </div>
         <div className="flex-none gap-3 items-center">
-          <div className="text-sm text-base-content/60">
-            <span className="text-white font-semibold">{totalSelected}</span> / {totalChannels} channels selected
+          <div className="text-sm text-base-content/60 hidden sm:block">
+            <span className="text-white font-semibold">{selected.size}</span> / {totalChannels} selected
           </div>
-          <Link href="/dashboard" className="btn btn-primary btn-sm">
-            Save Playlist →
-          </Link>
+          <button className="btn btn-primary btn-sm" onClick={handleSave} disabled={saving}>
+            {saving ? <span className="loading loading-spinner loading-sm" /> : 'Save Playlist →'}
+          </button>
         </div>
       </div>
 
@@ -84,98 +128,126 @@ export default function ChannelsPage() {
         </ul>
       </div>
 
-      <div className="flex flex-1 gap-0">
+      {loading ? (
+        <div className="flex-1 flex items-center justify-center gap-3 flex-col">
+          <span className="loading loading-spinner loading-lg text-primary" />
+          <p className="text-base-content/60 text-sm">Loading your channels...</p>
+        </div>
+      ) : (
+        <div className="flex flex-1 gap-0">
 
-        {/* Sidebar — category list */}
-        <aside className="w-64 bg-base-100 border-r border-base-300 flex-shrink-0 sticky top-[65px] h-[calc(100vh-65px)] overflow-y-auto p-4 hidden md:block">
-          <p className="text-xs font-semibold text-base-content/40 uppercase tracking-wider mb-3">Categories</p>
-          <ul className="menu menu-sm gap-1 p-0">
-            {MOCK_CATEGORIES.map((cat) => (
-              <li key={cat.id}>
-                <a href={`#${cat.id}`} className="flex justify-between">
-                  <span className="truncate text-sm">{cat.label}</span>
-                  {cat.selected > 0 && (
-                    <span className="badge badge-primary badge-xs">{cat.selected}</span>
-                  )}
-                </a>
-              </li>
-            ))}
-          </ul>
-        </aside>
+          {/* Sidebar */}
+          <aside className="w-60 bg-base-100 border-r border-base-300 flex-shrink-0 sticky top-[113px] h-[calc(100vh-113px)] overflow-y-auto p-4 hidden md:block">
+            <p className="text-xs font-semibold text-base-content/40 uppercase tracking-wider mb-3">
+              {categories.length} Categories
+            </p>
+            <ul className="menu menu-sm gap-0.5 p-0">
+              {categories.map(cat => {
+                const catSelected = cat.channels.filter(ch => selected.has(ch.stream_id)).length
+                return (
+                  <li key={cat.category_id}>
+                    <a href={`#cat-${cat.category_id}`} className="flex justify-between text-xs py-1.5">
+                      <span className="truncate">{cat.category_name}</span>
+                      {catSelected > 0 && (
+                        <span className="badge badge-primary badge-xs shrink-0">{catSelected}</span>
+                      )}
+                    </a>
+                  </li>
+                )
+              })}
+            </ul>
+          </aside>
 
-        {/* Main content */}
-        <main className="flex-1 p-6 space-y-6 max-w-3xl">
+          {/* Main */}
+          <main className="flex-1 p-5 space-y-5 max-w-3xl">
 
-          {/* Search + filter bar */}
-          <div className="flex gap-3 flex-wrap">
-            <input
-              type="text"
-              placeholder="Search channels..."
-              className="input input-bordered flex-1 min-w-48"
-            />
-            <select className="select select-bordered">
-              <option>All categories</option>
-              {MOCK_CATEGORIES.map((c) => (
-                <option key={c.id}>{c.label}</option>
-              ))}
-            </select>
-            <button className="btn btn-ghost btn-sm self-center text-sm">Select all</button>
-            <button className="btn btn-ghost btn-sm self-center text-sm text-error">Clear all</button>
-          </div>
+            {error && <div className="alert alert-error text-sm"><span>{error}</span></div>}
 
-          {/* Category sections */}
-          {MOCK_CATEGORIES.map((cat) => (
-            <div key={cat.id} id={cat.id} className="card bg-base-100 shadow-sm">
-              <div className="card-body gap-3 p-5">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <input type="checkbox" className="checkbox checkbox-primary"
-                      defaultChecked={cat.selected === cat.count}
-                    />
-                    <div>
-                      <h3 className="font-semibold">{cat.label}</h3>
-                      <p className="text-xs text-base-content/50">{cat.count} channels</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {cat.selected > 0 && (
-                      <span className="badge badge-primary">{cat.selected} selected</span>
-                    )}
-                    <button className="btn btn-ghost btn-xs">Expand</button>
-                  </div>
-                </div>
-
-                {/* Channel chips */}
-                <div className="flex flex-wrap gap-2 pt-1">
-                  {cat.channels.map((ch) => (
-                    <label key={ch} className="cursor-pointer">
-                      <input type="checkbox" className="hidden peer" defaultChecked={cat.selected > 0} />
-                      <span className="badge badge-outline peer-checked:badge-primary peer-checked:border-primary text-xs py-3 px-3 cursor-pointer hover:badge-primary transition-all">
-                        {ch}
-                      </span>
-                    </label>
-                  ))}
-                  {cat.count > cat.channels.length && (
-                    <span className="badge badge-ghost text-xs py-3 px-3">
-                      +{cat.count - cat.channels.length} more
-                    </span>
-                  )}
-                </div>
-              </div>
+            {/* Search + controls */}
+            <div className="flex gap-3 flex-wrap items-center">
+              <input
+                type="text"
+                placeholder="Search channels..."
+                className="input input-bordered flex-1 min-w-48"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+              />
+              <button className="btn btn-ghost btn-sm" onClick={selectAll}>Select all</button>
+              <button className="btn btn-ghost btn-sm text-error" onClick={clearAll}>Clear all</button>
             </div>
-          ))}
 
-        </main>
-      </div>
+            {/* Category cards */}
+            {visible.map(cat => {
+              const catSelectedCount = cat.channels.filter(ch => selected.has(ch.stream_id)).length
+              const allCatSelected = catSelectedCount === cat.channels.length
+              const someCatSelected = catSelectedCount > 0 && !allCatSelected
 
-      {/* Sticky bottom bar on mobile */}
-      <div className="btm-nav btm-nav-sm md:hidden bg-base-100 border-t border-base-300">
+              return (
+                <div key={cat.category_id} id={`cat-${cat.category_id}`} className="card bg-base-100 shadow-sm">
+                  <div className="card-body gap-3 p-5">
+
+                    {/* Category header */}
+                    <div className="flex items-center justify-between">
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          className="checkbox checkbox-primary"
+                          checked={allCatSelected}
+                          ref={el => { if (el) el.indeterminate = someCatSelected }}
+                          onChange={() => toggleCategory(cat)}
+                        />
+                        <div>
+                          <p className="font-semibold text-sm">{cat.category_name}</p>
+                          <p className="text-xs text-base-content/50">{cat.channels.length} channels</p>
+                        </div>
+                      </label>
+                      {catSelectedCount > 0 && (
+                        <span className="badge badge-primary badge-sm">{catSelectedCount} selected</span>
+                      )}
+                    </div>
+
+                    {/* Channel chips */}
+                    <div className="flex flex-wrap gap-2">
+                      {cat.channels.map(ch => (
+                        <label key={ch.stream_id} className="cursor-pointer">
+                          <input
+                            type="checkbox"
+                            className="hidden"
+                            checked={selected.has(ch.stream_id)}
+                            onChange={() => toggleChannel(ch.stream_id)}
+                          />
+                          <span className={`badge badge-outline text-xs py-3 px-3 cursor-pointer transition-all hover:badge-primary ${selected.has(ch.stream_id) ? 'badge-primary border-primary' : ''}`}>
+                            {ch.name}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+
+                  </div>
+                </div>
+              )
+            })}
+
+            {visible.length === 0 && (
+              <div className="text-center py-20 text-base-content/40">
+                No channels match &quot;{search}&quot;
+              </div>
+            )}
+
+          </main>
+        </div>
+      )}
+
+      {/* Mobile bottom bar */}
+      <div className="btm-nav btm-nav-sm md:hidden bg-base-100 border-t border-base-300 z-10">
         <div className="flex items-center justify-between w-full px-6">
-          <span className="text-sm text-base-content/60">{totalSelected} channels selected</span>
-          <Link href="/dashboard" className="btn btn-primary btn-sm">Save Playlist →</Link>
+          <span className="text-sm text-base-content/60">{selected.size} selected</span>
+          <button className="btn btn-primary btn-sm" onClick={handleSave} disabled={saving}>
+            {saving ? <span className="loading loading-spinner loading-sm" /> : 'Save →'}
+          </button>
         </div>
       </div>
 
     </div>
-  );
+  )
 }

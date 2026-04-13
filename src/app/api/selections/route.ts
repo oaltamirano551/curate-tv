@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 
+// Saving large selections (1000s of channels) requires multiple DB round-trips
+export const maxDuration = 60
+
 // GET /api/selections — get user's selected stream IDs + cached channel details
 export async function GET() {
   const supabase = await createClient()

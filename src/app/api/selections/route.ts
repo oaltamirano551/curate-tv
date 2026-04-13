@@ -2,18 +2,47 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 
-// GET /api/selections — get user's selected stream IDs
+// GET /api/selections — get user's selected stream IDs + cached channel details
 export async function GET() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const { data } = await supabase
+  const admin = createAdminClient()
+
+  const { data: selRows } = await admin
     .from('selections')
     .select('stream_id')
     .eq('user_id', user.id)
+    .range(0, 9999)
 
-  return NextResponse.json({ selections: (data || []).map(s => s.stream_id) })
+  const streamIds = (selRows || []).map(s => s.stream_id)
+
+  if (streamIds.length === 0) {
+    return NextResponse.json({ selections: [], channels: [] })
+  }
+
+  // Also return cached channel details so the picker can pre-populate selections
+  const { data: cred } = await admin
+    .from('credentials')
+    .select('id')
+    .eq('user_id', user.id)
+    .single()
+
+  let channels: unknown[] = []
+  if (cred) {
+    const BATCH = 500
+    for (let i = 0; i < streamIds.length; i += BATCH) {
+      const { data } = await admin
+        .from('channels')
+        .select('stream_id, name, category_id, category_name, logo_url, epg_id')
+        .eq('credential_id', cred.id)
+        .in('stream_id', streamIds.slice(i, i + BATCH))
+      channels = channels.concat(data || [])
+    }
+  }
+
+  return NextResponse.json({ selections: streamIds, channels })
 }
 
 // POST /api/selections — save selections + cache selected channel details in DB

@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { decrypt } from '@/lib/crypto'
 
+// EPG XML from provider can be 50MB+ and take 30-60s to fetch
+export const maxDuration = 60
+
 // GET /api/playlist/[token]/epg.xml — public EPG endpoint
 // Returns filtered XMLTV data for the user's selected channels only
 export async function GET(
@@ -60,17 +63,25 @@ export async function GET(
     return new NextResponse('<tv></tv>', { headers: { 'Content-Type': 'application/xml' } })
   }
 
-  // Filter XMLTV to selected channels only
+  // Filter XMLTV to selected channels only (paginate past 1000-row default)
   const { data: selections } = await admin
     .from('selections')
     .select('stream_id')
     .eq('user_id', playlist.user_id)
+    .range(0, 9999)
 
-  const { data: channels } = await admin
-    .from('channels')
-    .select('epg_id')
-    .eq('credential_id', playlist.credential_id)
-    .in('stream_id', (selections || []).map(s => s.stream_id))
+  const streamIds = (selections || []).map(s => s.stream_id)
+  const BATCH = 500
+  let allChannelRows: Array<{ epg_id: string }> = []
+  for (let i = 0; i < streamIds.length; i += BATCH) {
+    const { data } = await admin
+      .from('channels')
+      .select('epg_id')
+      .eq('credential_id', playlist.credential_id)
+      .in('stream_id', streamIds.slice(i, i + BATCH))
+    allChannelRows = allChannelRows.concat(data || [])
+  }
+  const channels = allChannelRows
 
   const epgIds = new Set((channels || []).map(c => c.epg_id).filter(Boolean))
 

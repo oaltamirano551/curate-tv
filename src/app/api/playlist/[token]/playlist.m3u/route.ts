@@ -20,11 +20,12 @@ export async function GET(
     return new NextResponse('Playlist not found', { status: 404 })
   }
 
-  // Get selected stream IDs for this user
+  // Get selected stream IDs for this user (paginate past 1000-row default)
   const { data: selections } = await admin
     .from('selections')
     .select('stream_id')
     .eq('user_id', playlist.user_id)
+    .range(0, 9999)
 
   if (!selections || selections.length === 0) {
     return new NextResponse('#EXTM3U\n# No channels selected', {
@@ -34,17 +35,22 @@ export async function GET(
 
   const streamIds = selections.map(s => s.stream_id)
 
-  // Get channel details for selected streams
-  const { data: channels } = await admin
-    .from('channels')
-    .select('stream_id, name, category_name, logo_url, epg_id')
-    .eq('credential_id', playlist.credential_id)
-    .in('stream_id', streamIds)
-    .order('category_name')
-    .order('name')
+  // Get channel details in batches (large IN clauses can hit URL length limits)
+  const BATCH = 500
+  let channels: Array<{ stream_id: number; name: string; category_name: string; logo_url: string; epg_id: string }> = []
+  for (let i = 0; i < streamIds.length; i += BATCH) {
+    const { data } = await admin
+      .from('channels')
+      .select('stream_id, name, category_name, logo_url, epg_id')
+      .eq('credential_id', playlist.credential_id)
+      .in('stream_id', streamIds.slice(i, i + BATCH))
+    channels = channels.concat(data || [])
+  }
+  // Sort client-side after batching
+  channels.sort((a, b) => a.category_name.localeCompare(b.category_name) || a.name.localeCompare(b.name))
 
-  if (!channels) {
-    return new NextResponse('#EXTM3U\n', { headers: { 'Content-Type': 'audio/x-mpegurl' } })
+  if (!channels || channels.length === 0) {
+    return new NextResponse('#EXTM3U\n# No channel details cached — re-save your selection', { headers: { 'Content-Type': 'audio/x-mpegurl' } })
   }
 
   // Build base URL for stream proxy

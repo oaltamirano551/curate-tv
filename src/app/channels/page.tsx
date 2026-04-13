@@ -44,8 +44,13 @@ export default function ChannelsPage() {
       const selData = await selRes.json()
       setCategories((catData.categories || []).map((c: Category) => ({ ...c, loaded: false })))
       const prevIds: number[] = selData.selections || []
+      const prevChannels: (Channel & { category_name: string })[] = selData.channels || []
       if (prevIds.length > 0) {
-        setSelected(new Map(prevIds.map((id: number) => [id, { stream_id: id, name: '', category_id: '', logo_url: '', epg_id: '', category_name: '' }])))
+        const detailMap = new Map(prevChannels.map(ch => [ch.stream_id, ch]))
+        setSelected(new Map(prevIds.map((id: number) => [
+          id,
+          detailMap.get(id) || { stream_id: id, name: '', category_id: '', logo_url: '', epg_id: '', category_name: '' }
+        ])))
       }
       setLoadingCats(false)
     }

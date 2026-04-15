@@ -167,7 +167,12 @@ export default function ChannelsPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ streamIds }),
     })
-    if (!res.ok) { setError('Failed to save. Try again.'); setSaving(false); return }
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      setError(`Save failed: ${body.error || res.status}`)
+      setSaving(false)
+      return
+    }
 
     // Phase 2: Cache channel details — build from all selected channels that have names
     // Covers both freshly loaded categories AND channels pre-loaded from DB cache

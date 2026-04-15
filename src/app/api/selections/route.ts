@@ -66,21 +66,30 @@ export async function POST(request: NextRequest) {
     .single()
   if (!cred) return NextResponse.json({ error: 'No credentials found' }, { status: 404 })
 
-  // Replace selections only — channel cache updated separately via sync-category upsert
-  await admin.from('selections').delete().eq('user_id', user.id)
+  // DELETE loops until table is clear — Supabase caps each DELETE at 1000 rows
+  let rowsDeleted = 0
+  do {
+    const { count } = await admin
+      .from('selections')
+      .delete({ count: 'exact' })
+      .eq('user_id', user.id)
+    rowsDeleted = count ?? 0
+  } while (rowsDeleted >= 1000)
 
+  // INSERT sequential 500-row batches — safe under all Supabase limits
+  // 12,555 IDs ÷ 500 = 26 batches × ~150ms = ~4s (well under Vercel 10s)
   if (streamIds.length > 0) {
     const rows = streamIds.map(sid => ({
       user_id: user.id,
       credential_id: cred.id,
       stream_id: sid,
     }))
-    const BATCH = 2000
-    const inserts = []
-    for (let i = 0; i < rows.length; i += BATCH) {
-      inserts.push(admin.from('selections').insert(rows.slice(i, i + BATCH)))
+    for (let i = 0; i < rows.length; i += 500) {
+      const { error } = await admin.from('selections').insert(rows.slice(i, i + 500))
+      if (error) {
+        return NextResponse.json({ error: `Insert failed at row ${i}: ${error.message}` }, { status: 500 })
+      }
     }
-    await Promise.all(inserts)
   }
 
   return NextResponse.json({ success: true, count: streamIds.length })

@@ -169,36 +169,37 @@ export default function ChannelsPage() {
     })
     if (!res.ok) { setError('Failed to save. Try again.'); setSaving(false); return }
 
-    // Phase 2: Sync channel details — only categories loaded from Xtream this session
-    // (categories still in cache from a previous save don't need re-syncing)
-    const catMap = new Map<string, { category_name: string; stream_ids: number[] }>()
+    // Phase 2: Cache channel details — send data frontend already has (no Xtream call)
+    // Only sync categories loaded this session (cat.loaded = true)
+    type CatEntry = { category_name: string; channels: Array<{ stream_id: number; name: string; logo_url: string; epg_id: string }> }
+    const catMap = new Map<string, CatEntry>()
     for (const cat of categories) {
       if (!cat.loaded || !cat.channels) continue
       const selectedInCat = cat.channels.filter(ch => selected.has(ch.stream_id))
       if (selectedInCat.length > 0) {
         catMap.set(cat.category_id, {
           category_name: cat.category_name,
-          stream_ids: selectedInCat.map(ch => ch.stream_id),
+          channels: selectedInCat.map(ch => ({ stream_id: ch.stream_id, name: ch.name, logo_url: ch.logo_url, epg_id: ch.epg_id })),
         })
       }
     }
 
-    const categories = Array.from(catMap.entries())
-    const total = categories.length
+    const catEntries = Array.from(catMap.entries())
+    const total = catEntries.length
     let done = 0
     let failed = 0
     setSyncProgress({ done: 0, total, failed: 0 })
 
-    // Sync 3 categories at a time — keep Xtream load manageable
-    const CHUNK = 3
-    for (let i = 0; i < categories.length; i += CHUNK) {
-      const chunk = categories.slice(i, i + CHUNK)
-      await Promise.all(chunk.map(async ([category_id, { category_name, stream_ids }]) => {
+    // 5 at a time — pure DB upserts, no Xtream calls, very fast
+    const CHUNK = 5
+    for (let i = 0; i < catEntries.length; i += CHUNK) {
+      const chunk = catEntries.slice(i, i + CHUNK)
+      await Promise.all(chunk.map(async ([category_id, { category_name, channels: chans }]) => {
         try {
           const r = await fetch('/api/sync-category', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ category_id, category_name, stream_ids }),
+            body: JSON.stringify({ category_id, category_name, channels: chans }),
           })
           if (!r.ok) failed++
         } catch { failed++ }

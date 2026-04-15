@@ -169,19 +169,16 @@ export default function ChannelsPage() {
     })
     if (!res.ok) { setError('Failed to save. Try again.'); setSaving(false); return }
 
-    // Phase 2: Cache channel details — send data frontend already has (no Xtream call)
-    // Only sync categories loaded this session (cat.loaded = true)
+    // Phase 2: Cache channel details — build from all selected channels that have names
+    // Covers both freshly loaded categories AND channels pre-loaded from DB cache
     type CatEntry = { category_name: string; channels: Array<{ stream_id: number; name: string; logo_url: string; epg_id: string }> }
     const catMap = new Map<string, CatEntry>()
-    for (const cat of categories) {
-      if (!cat.loaded || !cat.channels) continue
-      const selectedInCat = cat.channels.filter(ch => selected.has(ch.stream_id))
-      if (selectedInCat.length > 0) {
-        catMap.set(cat.category_id, {
-          category_name: cat.category_name,
-          channels: selectedInCat.map(ch => ({ stream_id: ch.stream_id, name: ch.name, logo_url: ch.logo_url, epg_id: ch.epg_id })),
-        })
-      }
+    for (const ch of selected.values()) {
+      if (!ch.category_id || !ch.name) continue
+      const existing = catMap.get(ch.category_id)
+      const entry = { stream_id: ch.stream_id, name: ch.name, logo_url: ch.logo_url, epg_id: ch.epg_id }
+      if (existing) existing.channels.push(entry)
+      else catMap.set(ch.category_id, { category_name: ch.category_name, channels: [entry] })
     }
 
     const catEntries = Array.from(catMap.entries())
@@ -256,11 +253,11 @@ export default function ChannelsPage() {
           )}
           {!syncProgress && (
             <div className="text-sm text-base-content/60 hidden sm:block">
-              <span className="text-white font-semibold">{selectedCount}</span> selected
+              <span className="text-white font-semibold">{selectedCount.toLocaleString()}</span> channels selected
             </div>
           )}
-          <button className="btn btn-primary btn-sm" onClick={handleSave} disabled={saving}>
-            {saving && !syncProgress ? <span className="loading loading-spinner loading-sm" /> : 'Save Playlist →'}
+          <button className="btn btn-primary btn-sm" onClick={handleSave} disabled={saving || selectingAll}>
+            {saving && !syncProgress ? <span className="loading loading-spinner loading-sm" /> : selectingAll ? 'Loading...' : 'Save Playlist →'}
           </button>
         </div>
       </div>

@@ -62,11 +62,13 @@ export async function POST(request: NextRequest) {
 
   if (channels.length === 0) return NextResponse.json({ ok: true, count: 0 })
 
-  // Table was wiped in phase 1 (POST /api/selections) — plain insert, no duplicates
-  const { error } = await admin.from('channels').insert(channels)
+  // Upsert — unique constraint on (credential_id, stream_id) handles duplicates cleanly
+  const { error } = await admin
+    .from('channels')
+    .upsert(channels, { onConflict: 'credential_id,stream_id' })
 
   if (error) {
-    console.error(`sync-category ${category_id} insert error:`, error.message)
+    console.error(`sync-category ${category_id}:`, error.message)
     return NextResponse.json({ ok: false, error: error.message }, { status: 500 })
   }
 

@@ -66,11 +66,8 @@ export async function POST(request: NextRequest) {
     .single()
   if (!cred) return NextResponse.json({ error: 'No credentials found' }, { status: 404 })
 
-  // Replace selections + wipe channel cache so sync-category starts clean
-  await Promise.all([
-    admin.from('selections').delete().eq('user_id', user.id),
-    admin.from('channels').delete().eq('credential_id', cred.id),
-  ])
+  // Replace selections only — channel cache updated separately via sync-category upsert
+  await admin.from('selections').delete().eq('user_id', user.id)
 
   if (streamIds.length > 0) {
     const rows = streamIds.map(sid => ({

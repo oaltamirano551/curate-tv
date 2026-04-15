@@ -169,14 +169,18 @@ export default function ChannelsPage() {
     })
     if (!res.ok) { setError('Failed to save. Try again.'); setSaving(false); return }
 
-    // Phase 2: Sync channel details per category from Xtream
-    // Group selected channels by category_id (only channels we have metadata for)
+    // Phase 2: Sync channel details — only categories loaded from Xtream this session
+    // (categories still in cache from a previous save don't need re-syncing)
     const catMap = new Map<string, { category_name: string; stream_ids: number[] }>()
-    for (const ch of selected.values()) {
-      if (!ch.category_id) continue
-      const entry = catMap.get(ch.category_id)
-      if (entry) entry.stream_ids.push(ch.stream_id)
-      else catMap.set(ch.category_id, { category_name: ch.category_name, stream_ids: [ch.stream_id] })
+    for (const cat of categories) {
+      if (!cat.loaded || !cat.channels) continue
+      const selectedInCat = cat.channels.filter(ch => selected.has(ch.stream_id))
+      if (selectedInCat.length > 0) {
+        catMap.set(cat.category_id, {
+          category_name: cat.category_name,
+          stream_ids: selectedInCat.map(ch => ch.stream_id),
+        })
+      }
     }
 
     const categories = Array.from(catMap.entries())

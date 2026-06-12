@@ -29,7 +29,6 @@ export default function ChannelsPage() {
   const [activeCountries, setActiveCountries] = useState<Set<string>>(new Set())
   const [loadingCats, setLoadingCats] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [syncProgress, setSyncProgress] = useState<{ done: number; total: number; failed: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [expandedCat, setExpandedCat] = useState<string | null>(null)
   const [selectingAll, setSelectingAll] = useState(false)
@@ -44,14 +43,9 @@ export default function ChannelsPage() {
       const catData = await catRes.json()
       const selData = await selRes.json()
       setCategories((catData.categories || []).map((c: Category) => ({ ...c, loaded: false })))
-      const prevIds: number[] = selData.selections || []
       const prevChannels: (Channel & { category_name: string })[] = selData.channels || []
-      if (prevIds.length > 0) {
-        const detailMap = new Map(prevChannels.map(ch => [ch.stream_id, ch]))
-        setSelected(new Map(prevIds.map((id: number) => [
-          id,
-          detailMap.get(id) || { stream_id: id, name: '', category_id: '', logo_url: '', epg_id: '', category_name: '' }
-        ])))
+      if (prevChannels.length > 0) {
+        setSelected(new Map(prevChannels.map(ch => [ch.stream_id, ch])))
       }
       setLoadingCats(false)
     }
@@ -156,58 +150,20 @@ export default function ChannelsPage() {
 
   async function handleSave() {
     setSaving(true)
-    setSyncProgress(null)
     setError(null)
 
-    const streamIds = Array.from(selected.keys())
-
-    // Phase 1: Save stream IDs only — tiny payload, fast (<2s)
+    const channels = Array.from(selected.values())
     const res = await fetch('/api/selections', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ streamIds }),
+      body: JSON.stringify({ channels }),
     })
+
     if (!res.ok) {
       const body = await res.json().catch(() => ({}))
       setError(`Save failed: ${body.error || res.status}`)
       setSaving(false)
       return
-    }
-
-    // Phase 2: Cache channel details — build from all selected channels that have names
-    // Covers both freshly loaded categories AND channels pre-loaded from DB cache
-    type CatEntry = { category_name: string; channels: Array<{ stream_id: number; name: string; logo_url: string; epg_id: string }> }
-    const catMap = new Map<string, CatEntry>()
-    for (const ch of selected.values()) {
-      if (!ch.category_id || !ch.name) continue
-      const existing = catMap.get(ch.category_id)
-      const entry = { stream_id: ch.stream_id, name: ch.name, logo_url: ch.logo_url, epg_id: ch.epg_id }
-      if (existing) existing.channels.push(entry)
-      else catMap.set(ch.category_id, { category_name: ch.category_name, channels: [entry] })
-    }
-
-    const catEntries = Array.from(catMap.entries())
-    const total = catEntries.length
-    let done = 0
-    let failed = 0
-    setSyncProgress({ done: 0, total, failed: 0 })
-
-    // 5 at a time — pure DB upserts, no Xtream calls, very fast
-    const CHUNK = 5
-    for (let i = 0; i < catEntries.length; i += CHUNK) {
-      const chunk = catEntries.slice(i, i + CHUNK)
-      await Promise.all(chunk.map(async ([category_id, { category_name, channels: chans }]) => {
-        try {
-          const r = await fetch('/api/sync-category', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ category_id, category_name, channels: chans }),
-          })
-          if (!r.ok) failed++
-        } catch { failed++ }
-        done++
-        setSyncProgress({ done, total, failed })
-      }))
     }
 
     router.push('/dashboard')
@@ -247,22 +203,11 @@ export default function ChannelsPage() {
           </Link>
         </div>
         <div className="flex-none gap-3 items-center">
-          {syncProgress && (
-            <div className="flex items-center gap-2 text-sm text-base-content/70">
-              <span className="loading loading-spinner loading-xs text-primary" />
-              <span>Syncing {syncProgress.done}/{syncProgress.total}</span>
-              {syncProgress.failed > 0 && (
-                <span className="text-error text-xs">{syncProgress.failed} failed</span>
-              )}
-            </div>
-          )}
-          {!syncProgress && (
-            <div className="text-sm text-base-content/60 hidden sm:block">
-              <span className="text-white font-semibold">{selectedCount.toLocaleString()}</span> channels selected
-            </div>
-          )}
+          <div className="text-sm text-base-content/60 hidden sm:block">
+            <span className="text-white font-semibold">{selectedCount.toLocaleString()}</span> channels selected
+          </div>
           <button className="btn btn-primary btn-sm" onClick={handleSave} disabled={saving || selectingAll}>
-            {saving && !syncProgress ? <span className="loading loading-spinner loading-sm" /> : selectingAll ? 'Loading...' : 'Save Playlist →'}
+            {saving ? <span className="loading loading-spinner loading-sm" /> : selectingAll ? 'Loading...' : 'Save Playlist →'}
           </button>
         </div>
       </div>
